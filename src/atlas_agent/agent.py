@@ -1,12 +1,6 @@
 """Milestone 2: complete the bounded decision–action–observation loop."""
 
-# Ruff suppressions cover names intentionally reserved for the TODOs. Remove
-# this line after completing Milestone 2.
-# ruff: noqa: F401, F821, F841
-
 from __future__ import annotations
-
-import json
 
 from pydantic import ValidationError
 
@@ -19,7 +13,7 @@ from .agent_models import (
 from .llm import StructuredLLM
 from .models import AgentResponse, AgentRun, LabRequest, ToolObservation, TraceEvent
 from .prompts import initialize_messages
-from .tools import MUTATING_TOOLS, ToolEnvironment
+from .tools import ARGUMENT_MODELS, MUTATING_TOOLS, ToolEnvironment
 from .validation import validate_final_response, validate_proposed_tool_call
 
 
@@ -43,8 +37,9 @@ def run_agent(
 
     for step in range(1, max_steps + 1):
         try:
-            # TODO 2.1: Ask llm for one decision validated by DecisionAdapter.
-            raise NotImplementedError
+            decision = DecisionAdapter.validate_python(
+                llm.generate(messages=messages, response_model=DecisionAdapter)
+            )
         except (ValidationError, ValueError, TypeError, RuntimeError) as exc:
             return _failed(
                 f"The model did not produce a valid decision: {exc}",
@@ -53,30 +48,72 @@ def run_agent(
             )
 
         if isinstance(decision, ClarificationDecision):
-            # TODO 2.2: Return clarification_required without calling a tool.
-            raise NotImplementedError
+            response = AgentResponse(
+                status="clarification_required", message=decision.question
+            )
+            errors = validate_final_response(response, trace)
+            if errors:
+                return _failed("; ".join(errors), trace, "invalid_final_response")
+            return AgentRun(
+                response=response, trace=trace, termination_reason="clarification_required"
+            )
 
         if isinstance(decision, FinalDecision):
-            # TODO 2.3: Validate the final response. Return a failed run if it is
-            # inconsistent; otherwise return the model's final response.
-            raise NotImplementedError
+            errors = validate_final_response(decision.response, trace)
+            if errors:
+                return _failed("; ".join(errors), trace, "invalid_final_response")
+            return AgentRun(
+                response=decision.response, trace=trace, termination_reason="model_finished"
+            )
 
         if not isinstance(decision, ToolCallDecision):
             return _failed(
                 "Unsupported decision type.", trace, "invalid_model_decision"
             )
 
-        # TODO 2.4: Call validate_proposed_tool_call. If it returns errors,
-        # create an action_gate_denied observation. Otherwise dispatch the tool.
-        raise NotImplementedError
+        try:
+            ARGUMENT_MODELS[decision.tool].model_validate(decision.arguments)
+        except ValidationError as exc:
+            observation = ToolObservation(
+                ok=False,
+                tool=decision.tool,
+                error_code="invalid_arguments",
+                message=str(exc),
+            )
+        else:
+            try:
+                errors = validate_proposed_tool_call(
+                    decision, request=request, trace=trace
+                )
+            except (ValueError, TypeError, OverflowError) as exc:
+                errors = [f"invalid_policy_context: {exc}"]
+            if decision.tool in MUTATING_TOOLS and any(
+                event.mutating and event.observation.ok for event in trace
+            ):
+                errors.append("mutation_already_completed")
+            if errors:
+                observation = ToolObservation(
+                    ok=False,
+                    tool=decision.tool,
+                    error_code="action_gate_denied",
+                    message="; ".join(errors),
+                )
+            else:
+                observation = environment.dispatch(decision.tool, decision.arguments)
 
-        # TODO 2.5: Create and append a TraceEvent. Set mutating by consulting
-        # MUTATING_TOOLS rather than hard-coding one tool name.
-        raise NotImplementedError
+        trace.append(
+            TraceEvent(
+                step=step,
+                decision=decision.model_dump(),
+                observation=observation,
+                mutating=decision.tool in MUTATING_TOOLS,
+            )
+        )
+        messages.append({"role": "assistant", "content": decision.model_dump_json()})
+        messages.append({"role": "tool", "content": observation.model_dump_json()})
 
-        # TODO 2.6: Append the serialized decision as an assistant message and
-        # the serialized observation as a tool message.
-        raise NotImplementedError
-
-    # TODO 2.7: Return an explicit maximum_steps_exceeded failure.
-    raise NotImplementedError
+    return _failed(
+        "The maximum number of decision steps was reached.",
+        trace,
+        "maximum_steps_exceeded",
+    )

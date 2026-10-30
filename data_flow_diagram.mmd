@@ -1,0 +1,20 @@
+flowchart TB
+    R["LabRequest: trusted metadata<br/>User: alice | Project: polymer-study | Resource: tensile-01<br/>2026-10-15, 10:00-11:00<br/>Request text: Reserve tensile-01 for polymer-study from 10:00 to 11:00"]
+    M["Model: ToolCallDecision, steps 1-4<br/>1. search_lab_documents | 2. get_user_authorizations<br/>3. get_resource_status | 4. reserve_resource"]
+    G["Action gate before every dispatch<br/>Validate arguments and bind them to the request<br/>Reservation: all 10 policy facts true; no prior successful mutation"]
+    T["ToolEnvironment / LabSimulator<br/>Run the permitted tool with the checked arguments"]
+    O["ToolObservation: ok=true<br/>Policy retrieved; Alice authorized and trained<br/>tensile-01 available, calibrated, no maintenance<br/>Step 4: confirmed reservation with a new ID"]
+    H["Trace and updated messages<br/>Append each decision and observation<br/>4 trace events; only step 4 is mutating"]
+    F["Model: FinalDecision, step 5<br/>status: completed | completed_actions: reserve_resource<br/>citation: TRN-210#tensile-tester"]
+    V["Validate final response against trace<br/>Citation was retrieved; claimed reservation succeeded"]
+    A["AgentRun: The reservation was created.<br/>termination_reason: model_finished"]
+    R --> M --> G --> T --> O --> H
+    H -. "Next decision sees observation" .-> M
+    H --> F --> V --> A
+    H -. "Evidence" .-> V
+    classDef request fill:#edf3fa,stroke:#42658a,color:#17293b
+    classDef check fill:#fff4df,stroke:#a97828,color:#38290e
+    classDef result fill:#eaf4ed,stroke:#4c7c5c,color:#193323
+    class R,M,F request
+    class G,V check
+    class O,H,A result
